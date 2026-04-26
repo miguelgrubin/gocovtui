@@ -4,46 +4,48 @@ import (
 	"fmt"
 	"path"
 
-	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 	"github.com/miguelgrubin/gocovtui/pkg/coverage"
 )
 
 // Model is the Bubble Tea model for the coverage TUI.
 type Model struct {
-	list    list.Model
-	summary coverage.SummaryStats
-	width   int
-	height  int
-	ready   bool
+	viewport viewport.Model
+	items    []rowData
+	summary  coverage.SummaryStats
+	cursor   int
+	width    int
+	height   int
+	ready    bool
 }
 
 // NewModel creates a new TUI Model from coverage stats.
 // Files are grouped by folder: folders sorted by coverage ascending,
 // with each folder's files also sorted by coverage ascending.
 func NewModel(stats *coverage.Stats) Model {
-	items := []list.Item{}
+	var items []rowData
 	if stats != nil {
-		// Build a map of dir → files for grouping
 		filesByDir := make(map[string][]*coverage.FileStats)
 		for _, f := range stats.FilesSortedByCoverage(true) {
 			dir := dirOf(f.Filename)
 			filesByDir[dir] = append(filesByDir[dir], f)
 		}
 
-		// Emit folder row then its files, folders ordered by coverage ascending
 		for _, folder := range stats.FoldersSortedByCoverage(true) {
-			items = append(items, folderItem{
-				dir:       folder.Dir,
-				coverPct:  folder.CoveragePercent,
-				fileCount: folder.FileCount,
-				total:     folder.TotalStatements,
-				covered:   folder.CoveredStatements,
+			items = append(items, rowData{
+				kind:     kindFolder,
+				name:     folder.Dir,
+				total:    folder.TotalStatements,
+				covered:  folder.CoveredStatements,
+				coverPct: folder.CoveragePercent,
 			})
 			for _, f := range filesByDir[folder.Dir] {
-				items = append(items, fileItem{
-					filename: f.Filename,
+				items = append(items, rowData{
+					kind:     kindFile,
+					name:     f.Filename,
 					total:    f.TotalStatements,
 					covered:  f.CoveredStatements,
 					coverPct: f.CoveragePercent,
@@ -52,22 +54,13 @@ func NewModel(stats *coverage.Stats) Model {
 		}
 	}
 
-	l := list.New(items, fileDelegate{}, 0, 0)
-	l.Title = "gocovtui"
-	l.SetShowStatusBar(false)
-	l.SetFilteringEnabled(false)
-	l.SetShowHelp(true)
-	l.Styles.Title = titleStyle
-	l.Styles.TitleBar = lipgloss.NewStyle().Background(colorBackground).Padding(0, 1)
-	l.Styles.NoItems = lipgloss.NewStyle().Foreground(colorGray).Padding(0, 1)
-
 	var summary coverage.SummaryStats
 	if stats != nil {
 		summary = stats.GetSummary()
 	}
 
 	return Model{
-		list:    l,
+		items:   items,
 		summary: summary,
 	}
 }
@@ -83,19 +76,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		headerH := 3 // header lines
-		m.list.SetSize(msg.Width, msg.Height-headerH)
+		headerH := 3
+		m.viewport = viewport.New(msg.Width, msg.Height-headerH)
+		m.viewport.Style = lipgloss.NewStyle().Background(colorBackground)
 		m.ready = true
+		m.refreshTable()
 
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+				m.refreshTable()
+				m.scrollToCursor()
+			}
+			return m, nil
+		case "down", "j":
+			if m.cursor < len(m.items)-1 {
+				m.cursor++
+				m.refreshTable()
+				m.scrollToCursor()
+			}
+			return m, nil
+		case "home", "g":
+			m.cursor = 0
+			m.refreshTable()
+			m.viewport.GotoTop()
+			return m, nil
+		case "end", "G":
+			m.cursor = len(m.items) - 1
+			m.refreshTable()
+			m.viewport.GotoBottom()
+			return m, nil
 		}
 	}
 
 	var cmd tea.Cmd
-	m.list, cmd = m.list.Update(msg)
+	m.viewport, cmd = m.viewport.Update(msg)
 	return m, cmd
 }
 
@@ -104,7 +123,89 @@ func (m Model) View() string {
 	if !m.ready {
 		return "\n  Loading…"
 	}
-	return renderHeader(m.summary, m.width) + "\n" + m.list.View()
+	title := titleStyle.Render("gocovtui")
+	header := renderHeader(m.summary, m.width)
+	help := lipgloss.NewStyle().Foreground(colorDimGray).Padding(0, 1).
+		Render("↑/↓ navigate • q quit")
+	return title + "\n" + header + "\n" + m.viewport.View() + "\n" + help
+}
+
+// refreshTable rebuilds the lipgloss table and sets it as the viewport content.
+func (m *Model) refreshTable() {
+	if m.width == 0 {
+		return
+	}
+	items := m.items
+	cursor := m.cursor
+
+	t := table.New().
+		Border(lipgloss.NormalBorder()).
+		BorderStyle(lipgloss.NewStyle().Foreground(colorPurple)).
+		Headers("NAME", "STMTS", "COVERED", "COVERAGE").
+		StyleFunc(func(row, col int) lipgloss.Style {
+			if row == table.HeaderRow {
+				return tableHeaderStyle
+			}
+			idx := row // 0-based data row index
+			if idx < 0 || idx >= len(items) {
+				return tableFileStyle
+			}
+			item := items[idx]
+			selected := idx == cursor
+
+			if col == 3 {
+				// Coverage column: always color by percentage
+				base := coverageStyle(item.coverPct)
+				if selected {
+					if item.kind == kindFolder {
+						return tableSelectedFolderStyle
+					}
+					return tableSelectedFileStyle
+				}
+				return base
+			}
+
+			if selected {
+				if item.kind == kindFolder {
+					return tableSelectedFolderStyle
+				}
+				return tableSelectedFileStyle
+			}
+			if item.kind == kindFolder {
+				return tableFolderStyle
+			}
+			return tableFileStyle
+		}).
+		Width(m.width)
+
+	for _, item := range items {
+		name := item.name
+		if item.kind == kindFolder {
+			name = "▶ " + name
+		} else {
+			name = "  " + name
+		}
+		t.Row(
+			name,
+			fmt.Sprintf("%d", item.total),
+			fmt.Sprintf("%d", item.covered),
+			fmt.Sprintf("%.1f%%", item.coverPct),
+		)
+	}
+
+	m.viewport.SetContent(t.String())
+}
+
+// scrollToCursor ensures the viewport shows the currently selected row.
+// Each data row is 1 line tall inside the table (plus 1-line header and borders).
+func (m *Model) scrollToCursor() {
+	// Table has: top border (1) + header (1) + header-bottom border (1) = 3 lines before data
+	lineOffset := 3 + m.cursor
+	if lineOffset < m.viewport.YOffset {
+		m.viewport.SetYOffset(lineOffset)
+	} else if lineOffset >= m.viewport.YOffset+m.viewport.Height {
+		m.viewport.SetYOffset(lineOffset - m.viewport.Height + 1)
+	}
 }
 
 // dirOf returns the parent directory of a file path using forward-slash semantics.
@@ -117,7 +218,7 @@ func renderHeader(s coverage.SummaryStats, width int) string {
 	label := headerLabelStyle.Render
 	value := headerValueStyle.Render
 
-	coverage := fmt.Sprintf("%s %s  %s %s/%s  %s %s",
+	covText := fmt.Sprintf("%s %s  %s %s/%s  %s %s",
 		label("Coverage:"),
 		value(fmt.Sprintf("%.1f%%", s.CoveragePercent)),
 		label("Statements:"),
@@ -127,6 +228,6 @@ func renderHeader(s coverage.SummaryStats, width int) string {
 		value(fmt.Sprintf("%d", s.FileCount)),
 	)
 
-	bar := headerStyle.Width(width).Render(coverage)
+	bar := headerStyle.Width(width).Render(covText)
 	return bar
 }

@@ -41,42 +41,40 @@ var (
 				Background(colorBackground).
 				Bold(true)
 
-	// borderStyle is used for outer borders.
-	borderStyle = lipgloss.NewStyle().
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(colorPurple)
+	// coverageHighStyle colors coverage values ≥ 80%.
+	coverageHighStyle = lipgloss.NewStyle().Foreground(colorCyan).Bold(true).Padding(0, 1)
 
-	// itemNormalStyle is the default list item style.
-	itemNormalStyle = lipgloss.NewStyle().
-			Foreground(colorGray).
-			Padding(0, 1)
+	// coverageMidStyle colors coverage values 50–79%.
+	coverageMidStyle = lipgloss.NewStyle().Foreground(colorYellow).Bold(true).Padding(0, 1)
 
-	// itemSelectedStyle highlights the currently selected list item.
-	itemSelectedStyle = lipgloss.NewStyle().
-				Foreground(colorBackground).
-				Background(colorPurple).
+	// coverageLowStyle colors coverage values < 50%.
+	coverageLowStyle = lipgloss.NewStyle().Foreground(colorPink).Bold(true).Padding(0, 1)
+
+	// Table styles
+	tableHeaderStyle = lipgloss.NewStyle().
+				Foreground(colorPurple).
+				Bold(true).
+				Align(lipgloss.Center).
+				Padding(0, 1)
+
+	tableFolderStyle = lipgloss.NewStyle().
+				Foreground(colorPink).
 				Bold(true).
 				Padding(0, 1)
 
-	// coverageHighStyle colors coverage values ≥ 80%.
-	coverageHighStyle = lipgloss.NewStyle().Foreground(colorCyan).Bold(true)
-
-	// coverageMidStyle colors coverage values 50–79%.
-	coverageMidStyle = lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
-
-	// coverageLowStyle colors coverage values < 50%.
-	coverageLowStyle = lipgloss.NewStyle().Foreground(colorPink).Bold(true)
-
-	// folderRowStyle styles folder summary rows (bold, pink accent).
-	folderRowStyle = lipgloss.NewStyle().
-			Foreground(colorPink).
-			Bold(true).
+	tableFileStyle = lipgloss.NewStyle().
+			Foreground(colorGray).
 			Padding(0, 1)
 
-	// folderSelectedStyle styles a folder row when the cursor is on it.
-	folderSelectedStyle = lipgloss.NewStyle().
+	tableSelectedFolderStyle = lipgloss.NewStyle().
+					Foreground(colorBackground).
+					Background(colorPink).
+					Bold(true).
+					Padding(0, 1)
+
+	tableSelectedFileStyle = lipgloss.NewStyle().
 				Foreground(colorBackground).
-				Background(colorPink).
+				Background(colorPurple).
 				Bold(true).
 				Padding(0, 1)
 )
