@@ -61,7 +61,7 @@ func (d fileDelegate) renderFolder(w io.Writer, m list.Model, fi folderItem, sel
 	coloredPct := coverageStyle(fi.coverPct).Render(pctStr)
 
 	dir := fi.dir
-	maxNameLen := m.Width() - 20
+	maxNameLen := m.Width() - 22
 	if maxNameLen < 10 {
 		maxNameLen = 10
 	}
