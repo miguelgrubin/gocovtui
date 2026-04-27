@@ -77,6 +77,29 @@ var (
 				Background(colorPurple).
 				Bold(true).
 				Padding(0, 1)
+
+	// Find mode styles
+	findInputStyle = lipgloss.NewStyle().
+			Foreground(colorCyan).
+			Background(colorBackground).
+			Padding(0, 1)
+
+	findLabelStyle = lipgloss.NewStyle().
+			Foreground(colorPurple).
+			Bold(true).
+			Background(colorBackground).
+			Padding(0, 1)
+
+	findNoResultsStyle = lipgloss.NewStyle().
+				Foreground(colorPink).
+				Background(colorBackground).
+				Padding(0, 1)
+
+	errorStyle = lipgloss.NewStyle().
+			Foreground(colorPink).
+			Bold(true).
+			Background(colorBackground).
+			Padding(0, 1)
 )
 
 // coverageStyle returns the appropriate lipgloss style based on the coverage percentage.

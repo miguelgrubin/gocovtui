@@ -2,7 +2,10 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"path"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -20,12 +23,28 @@ type Model struct {
 	width    int
 	height   int
 	ready    bool
+
+	// Find mode state
+	findMode      bool
+	searchTerm    string
+	filteredItems []rowData
+	filteredMap   []int // maps filtered index -> original items index
+
+	// Module path prefix to strip for relative file paths
+	modulePath string
+
+	// Error/status message
+	statusMsg string
 }
+
+// editorFinishedMsg signals that the external editor process has exited.
+type editorFinishedMsg struct{ err error }
 
 // NewModel creates a new TUI Model from coverage stats.
 // Files are grouped by folder: folders sorted by coverage ascending,
 // with each folder's files also sorted by coverage ascending.
-func NewModel(stats *coverage.Stats) Model {
+// modulePath is the Go module path (from go.mod) used to resolve relative file paths.
+func NewModel(stats *coverage.Stats, modulePath string) Model {
 	var items []rowData
 	if stats != nil {
 		filesByDir := make(map[string][]*coverage.FileStats)
@@ -60,8 +79,9 @@ func NewModel(stats *coverage.Stats) Model {
 	}
 
 	return Model{
-		items:   items,
-		summary: summary,
+		items:      items,
+		summary:    summary,
+		modulePath: modulePath,
 	}
 }
 
@@ -82,7 +102,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 		m.refreshTable()
 
+	case editorFinishedMsg:
+		m.statusMsg = ""
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Editor error: %v", msg.err)
+		}
+		return m, nil
+
 	case tea.KeyMsg:
+		// Clear status message on any key press
+		m.statusMsg = ""
+
+		if m.findMode {
+			return m.updateFindMode(msg)
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -110,12 +144,141 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshTable()
 			m.viewport.GotoBottom()
 			return m, nil
+		case "f":
+			m.findMode = true
+			m.searchTerm = ""
+			m.applyFilter()
+			m.refreshTable()
+			return m, nil
+		case "e":
+			return m.handleEditAction()
 		}
 	}
 
 	var cmd tea.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
 	return m, cmd
+}
+
+// updateFindMode handles key events while in find mode.
+func (m Model) updateFindMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.findMode = false
+		m.searchTerm = ""
+		m.filteredItems = nil
+		m.filteredMap = nil
+		m.refreshTable()
+		return m, nil
+	case "enter":
+		if len(m.filteredItems) > 0 && m.cursor < len(m.filteredMap) {
+			m.cursor = m.filteredMap[m.cursor]
+		}
+		m.findMode = false
+		m.searchTerm = ""
+		m.filteredItems = nil
+		m.filteredMap = nil
+		m.refreshTable()
+		m.scrollToCursor()
+		return m, nil
+	case "up", "shift+tab":
+		if m.cursor > 0 {
+			m.cursor--
+			m.refreshTable()
+			m.scrollToCursor()
+		}
+		return m, nil
+	case "down", "tab":
+		max := len(m.filteredItems) - 1
+		if max < 0 {
+			max = len(m.items) - 1
+		}
+		if m.cursor < max {
+			m.cursor++
+			m.refreshTable()
+			m.scrollToCursor()
+		}
+		return m, nil
+	case "backspace":
+		if len(m.searchTerm) > 0 {
+			m.searchTerm = m.searchTerm[:len(m.searchTerm)-1]
+			m.applyFilter()
+			m.refreshTable()
+		}
+		return m, nil
+	default:
+		// Only add printable single characters
+		if len(msg.String()) == 1 {
+			m.searchTerm += msg.String()
+			m.applyFilter()
+			m.refreshTable()
+		}
+		return m, nil
+	}
+}
+
+// applyFilter filters items based on the current search term.
+func (m *Model) applyFilter() {
+	if m.searchTerm == "" {
+		m.filteredItems = nil
+		m.filteredMap = nil
+		m.cursor = 0
+		return
+	}
+	term := strings.ToLower(m.searchTerm)
+	m.filteredItems = nil
+	m.filteredMap = nil
+	for i, item := range m.items {
+		if strings.Contains(strings.ToLower(item.name), term) {
+			m.filteredItems = append(m.filteredItems, item)
+			m.filteredMap = append(m.filteredMap, i)
+		}
+	}
+	m.cursor = 0
+}
+
+// handleEditAction opens the selected file in the configured EDITOR.
+func (m Model) handleEditAction() (tea.Model, tea.Cmd) {
+	if m.cursor < 0 || m.cursor >= len(m.items) {
+		m.statusMsg = "No file selected"
+		return m, nil
+	}
+	item := m.items[m.cursor]
+
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		m.statusMsg = "EDITOR environment variable not set"
+		return m, nil
+	}
+
+	relPath, err := m.toRelativePath(item.name)
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Cannot resolve path: %v", err)
+		return m, nil
+	}
+
+	c := exec.Command(editor, relPath)
+	c.Stdin = os.Stdin
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+
+	return m, tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{err: err}
+	})
+}
+
+// toRelativePath converts a full module path (e.g. "github.com/user/repo/pkg/file.go")
+// to a relative path from the current directory (e.g. "./pkg/file.go").
+func (m Model) toRelativePath(fullPath string) (string, error) {
+	if m.modulePath == "" {
+		return "", fmt.Errorf("module path not configured")
+	}
+	rel, found := strings.CutPrefix(fullPath, m.modulePath)
+	if !found {
+		return "", fmt.Errorf("path %q does not belong to module %q", fullPath, m.modulePath)
+	}
+	// rel starts with "/" (e.g. "/pkg/file.go"), prepend "."
+	return "." + rel, nil
 }
 
 // View renders the full TUI screen.
@@ -125,8 +288,26 @@ func (m Model) View() string {
 	}
 	title := titleStyle.Render("gocovtui")
 	header := renderHeader(m.summary, m.width)
-	help := lipgloss.NewStyle().Foreground(colorDimGray).Padding(0, 1).
-		Render("↑/↓ navigate • q quit")
+
+	var help string
+	if m.findMode {
+		findBar := findLabelStyle.Render("Find:") + " " + findInputStyle.Render(m.searchTerm+"█")
+		if m.searchTerm != "" && len(m.filteredItems) == 0 {
+			findBar += " " + findNoResultsStyle.Render("no matches")
+		} else if m.searchTerm != "" {
+			findBar += " " + findLabelStyle.Render(fmt.Sprintf("(%d matches)", len(m.filteredItems)))
+		}
+		help = findBar + "\n" + lipgloss.NewStyle().Foreground(colorDimGray).Padding(0, 1).
+			Render("↑/↓ navigate • enter select • esc cancel")
+	} else {
+		helpText := "↑/↓ navigate • f find • e edit • q quit"
+		if m.statusMsg != "" {
+			helpText = errorStyle.Render(m.statusMsg)
+		}
+		help = lipgloss.NewStyle().Foreground(colorDimGray).Padding(0, 1).
+			Render(helpText)
+	}
+
 	return title + "\n" + header + "\n" + m.viewport.View() + "\n" + help
 }
 
@@ -136,6 +317,9 @@ func (m *Model) refreshTable() {
 		return
 	}
 	items := m.items
+	if m.findMode && m.filteredItems != nil {
+		items = m.filteredItems
+	}
 	cursor := m.cursor
 
 	t := table.New().
